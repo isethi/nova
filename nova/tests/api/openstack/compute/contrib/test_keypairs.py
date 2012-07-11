@@ -13,9 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 from lxml import etree
 import webob
 
+from nova.api.openstack import compute
 from nova.api.openstack.compute.contrib import keypairs
 from nova.api.openstack import wsgi
 from nova import db
@@ -24,6 +26,7 @@ from nova.openstack.common import jsonutils
 from nova import quota
 from nova import test
 from nova.tests.api.openstack import fakes
+import nova.tests.image.fake
 
 
 QUOTAS = quota.QUOTAS
@@ -52,18 +55,59 @@ def db_key_pair_get(context, user_id, name):
     pass
 
 
+def db_key_pair_get_create(context, user_id, name):
+    return fake_keypair(name)
+
+
 class KeypairsTest(test.TestCase):
 
     def setUp(self):
         super(KeypairsTest, self).setUp()
+        self.Controller = keypairs.Controller()
         fakes.stub_out_networking(self.stubs)
         fakes.stub_out_rate_limiting(self.stubs)
+        nova.tests.image.fake.stub_out_image_service(self.stubs)
+
         self.stubs.Set(db, "key_pair_get_all_by_user",
                        db_key_pair_get_all_by_user)
         self.stubs.Set(db, "key_pair_create",
                        db_key_pair_create)
         self.stubs.Set(db, "key_pair_destroy",
                        db_key_pair_destroy)
+
+        def fake_instance_create(context, inst_, session=None):
+            inst = dict(inst_)
+            inst['id'] = 1
+            inst['uuid'] = fakes.FAKE_UUID
+            inst['created_at'] = datetime.datetime(2010, 10, 10, 12, 0, 0)
+            inst['updated_at'] = datetime.datetime(2010, 10, 10, 12, 0, 0)
+            inst['progress'] = 0
+            inst['task_state'] = ''
+            inst['vm_state'] = ''
+
+            def fake_instance_get_for_create(context, id_, *args, **kwargs):
+                return (inst, inst)
+
+            self.stubs.Set(db, 'instance_update_and_get_original',
+                          fake_instance_get_for_create)
+
+            def fake_instance_get_all_for_create(context, *args, **kwargs):
+                return [inst]
+            self.stubs.Set(db, 'instance_get_all',
+                           fake_instance_get_all_for_create)
+            self.stubs.Set(db, 'instance_get_all_by_filters',
+                           fake_instance_get_all_for_create)
+
+            def fake_instance_add_security_group(context, instance_id,
+                                                 security_group_id):
+                pass
+
+            self.stubs.Set(db,
+                           'instance_add_security_group',
+                           fake_instance_add_security_group)
+            return inst
+
+        self.stubs.Set(db, 'instance_create', fake_instance_create)
 
     def test_keypair_list(self):
         req = webob.Request.blank('/v2/fake/os-keypairs')
@@ -255,6 +299,45 @@ class KeypairsTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app())
         print res
         self.assertEqual(res.status_int, 404)
+
+    def test_show(self):
+        self.stubs.Set(db, 'instance_get',
+                        fakes.fake_instance_get())
+        req = webob.Request.blank('/v2/fake/servers/1')
+        req.headers['Content-Type'] = 'application/json'
+        response = req.get_response(fakes.wsgi_app())
+        self.assertEquals(response.status_int, 200)
+        res_dict = jsonutils.loads(response.body)
+        self.assertTrue('key_name' in res_dict['server'])
+        self.assertEquals(res_dict['server']['key_name'], '')
+
+    def test_detail_servers(self):
+        self.stubs.Set(db, 'instance_get',
+                        fakes.fake_instance_get())
+        req = fakes.HTTPRequest.blank('/v2/fake/servers/detail')
+        res = req.get_response(fakes.wsgi_app())
+        server_dicts = jsonutils.loads(res.body)['servers']
+
+        for server_dict in server_dicts:
+            self.asserTrue('key_name' in server_dict)
+            self.assertEquals(server_dict['key_name'], '')
+
+    def test_create_server_add_key_name(self):
+        self.stubs.Set(db, "key_pair_get", db_key_pair_get_create)
+        req = fakes.HTTPRequest.blank('/fake/servers')
+        req.method = 'POST'
+        req.content_type = 'application/json'
+        body = {'server': {
+                  'name': 'server_test',
+                  'imageRef': 'a440c04b-79fa-479c-bed1-0b816eaec379',
+                  'flavorRef': '1',
+                  'key_name': 'fake-key-name',
+               }}
+        req.body = jsonutils.dumps(body)
+        res = req.get_response(compute.APIRouter())
+        server_dict = jsonutils.loads(res.body)['server']
+        self.assertTrue('key_name' in server_dict)
+        self.assertEquals(server_dict['key_name'], 'fake-key-name')
 
 
 class KeypairsXMLSerializerTest(test.TestCase):

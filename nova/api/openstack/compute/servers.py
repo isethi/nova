@@ -657,7 +657,10 @@ class Controller(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=msg)
 
         # optional openstack extensions:
-        key_name = server_dict.get('key_name')
+        key_name = None
+        if 'key_name_exists' in server_dict:
+            key_name = server_dict.get('key_name')
+            del server_dict['key_name_exists']
         user_data = server_dict.get('user_data')
         self._validate_user_data(user_data)
 
