@@ -84,6 +84,10 @@ def _download_tarball_and_verify(request, staging_path):
         msg = "Verified image checksum %(checksum)s"
         logging.info(msg % locals())
 
+    parent = response.info().getheader('x-image-meta-parent', None)
+
+    return parent
+
 
 def _download_tarball(sr_path, staging_path, image_id, glance_host,
                       glance_port, glance_use_ssl, auth_token):
@@ -100,16 +104,19 @@ def _download_tarball(sr_path, staging_path, image_id, glance_host,
     else:
         scheme = 'http'
 
-    url = ("%(scheme)s://%(glance_host)s:%(glance_port)d/v1/images/"
-           "%(image_id)s" % locals())
-    logging.info("Downloading %s" % url)
+    parent = image_id
 
-    request = urllib2.Request(url, headers=headers)
-    try:
-        _download_tarball_and_verify(request, staging_path)
-    except Exception:
-        logging.exception('Failed to retrieve %(url)s' % locals())
-        raise
+    while (parent is not None):
+        url = ("%(scheme)s://%(glance_host)s:%(glance_port)d/v1/images/"
+               "%(parent)s" % locals())
+        logging.info("Downloading %s" % url)
+
+        request = urllib2.Request(url, headers=headers)
+        try:
+            parent = _download_tarball_and_verify(request, staging_path)
+        except Exception:
+            logging.exception('Failed to retrieve %(url)s' % locals())
+            raise
 
 
 def _upload_tarball(staging_path, image_id, glance_host, glance_port,
